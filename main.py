@@ -1,11 +1,12 @@
 import math
 
 import gymnasium as gym
+import matplotlib.pyplot as plt
 import numpy as np
 import pygame
 import torch
 
-from dqn_agent import DQNAgent
+from dqn_agent import DQNAgent, DoubleDQNAgent
 
 
 def render_agent(agent, episode):
@@ -122,7 +123,7 @@ def render_agent(agent, episode):
                 marker = ">" if selected else " "
 
                 write(
-                    f"{marker} Torque {i - 1:+d}: {qs[i]:+.2f}",
+                    f"{marker} Torque {i - 1:+d}: {qs[i]:+.4f}",
                     left, 390 + i * 30, color
                 )
 
@@ -149,17 +150,63 @@ def render_agent(agent, episode):
         pygame.quit()
 
 
+def plot_training_results(reward_history, loss_history, qnet):
+    weights = np.concatenate([
+        param.detach().cpu().numpy().ravel()
+        for name, param in qnet.named_parameters()
+        if "weight" in name
+    ])
+
+    fig, axes = plt.subplots(1, 3, figsize=(15, 4))
+    fig.patch.set_facecolor("#fcfcfb")
+
+    panels = (
+        (axes[0], reward_history, "Reward per episode", "Episode", "Reward", "#2a78d6", "plot"),
+        (axes[1], loss_history, "Training loss", "Update step", "Loss", "#1baf7a", "plot"),
+    )
+
+    for ax, data, title, xlabel, ylabel, color, kind in panels:
+        ax.plot(data, color=color, linewidth=1.5)
+        ax.set_title(title, color="#0b0b0b")
+        ax.set_xlabel(xlabel, color="#52514e")
+        ax.set_ylabel(ylabel, color="#52514e")
+        ax.set_facecolor("#fcfcfb")
+        ax.grid(color="#e1e0d9", linewidth=0.8)
+        for spine in ax.spines.values():
+            spine.set_color("#c3c2b7")
+        ax.tick_params(colors="#898781")
+
+    ax = axes[2]
+    ax.hist(weights, bins=50, color="#2a78d6")
+    ax.set_title("QNet weight distribution", color="#0b0b0b")
+    ax.set_xlabel("Weight value", color="#52514e")
+    ax.set_ylabel("Count", color="#52514e")
+    ax.set_facecolor("#fcfcfb")
+    ax.grid(color="#e1e0d9", linewidth=0.8)
+    for spine in ax.spines.values():
+        spine.set_color("#c3c2b7")
+    ax.tick_params(colors="#898781")
+
+    fig.tight_layout()
+    fig.savefig("training_results.png", dpi=150, facecolor=fig.get_facecolor())
+    plt.show()
+
+
 def main():
     env = gym.make("Acrobot-v1")
 
     agent = DQNAgent(
         state_size=env.observation_space.shape[0],
-        action_size=env.action_space.n
+        action_size=env.action_space.n,
+        dueling=True,
+        use_per=False
     )
 
-    episodes = 1000
-    sync_interval = 100
+    episodes = 500
+    sync_interval_steps = 500
+    render_interval_episodes = 100
     reward_history = []
+    total_steps = 0
 
     try:
         for episode in range(1, episodes + 1):
@@ -178,12 +225,14 @@ def main():
                 total_reward += reward
                 episode_done = terminated or truncated
 
+                total_steps += 1
+                if total_steps % sync_interval_steps == 0:
+                    agent.sync_qnet()
+
             reward_history.append(total_reward)
 
-            if episode % sync_interval == 0:
-                agent.sync_qnet()
-
-                recent = reward_history[-sync_interval:]
+            if episode % render_interval_episodes == 0:
+                recent = reward_history[-render_interval_episodes:]
                 print(
                     f"Episode {episode}: "
                     f"Reward={total_reward:.0f}, "
@@ -191,6 +240,8 @@ def main():
                 )
 
                 render_agent(agent, episode)
+
+        plot_training_results(reward_history, agent.loss_history, agent.qnet)
 
     finally:
         env.close()

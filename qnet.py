@@ -7,14 +7,14 @@ class QNet(nn.Module):
         super().__init__()
         self.dueling = dueling
 
-        self.l1 = nn.Linear(state_size, 64)
-        self.l2 = nn.Linear(64, 32)
+        self.l1 = nn.Linear(state_size, 32)
+        self.l2 = nn.Linear(32, 16)
 
         if self.dueling:
-            self.l3 = nn.Linear(32, 1)  # Value stream
-            self.l4 = nn.Linear(32, action_size)  # Advantage stream
+            self.l3 = nn.Linear(16, 1)  # Value stream
+            self.l4 = nn.Linear(16, action_size)  # Advantage stream
         else:
-            self.l3 = nn.Linear(32, action_size)
+            self.l3 = nn.Linear(16, action_size)
 
     def forward(self, x):
         x = F.relu(self.l1(x))
