@@ -9,8 +9,8 @@ class ReplayBuffer:
         self.buffer = deque(maxlen=buffer_size)
         self.batch_size = batch_size
 
-    def add(self, state, action, reward, next_state, done):
-        data = (state, action, reward, next_state, done)
+    def add(self, state, action, reward, next_state, done, discount=1.0):
+        data = (state, action, reward, next_state, done, discount)
         self.buffer.append(data)
 
     def __len__(self):
@@ -34,8 +34,11 @@ class ReplayBuffer:
         dones = torch.tensor(
             [x[4] for x in data], dtype=torch.float32
         )
+        discounts = torch.tensor(
+            [x[5] for x in data], dtype=torch.float32
+        )
 
-        return states, actions, rewards, next_states, dones
+        return states, actions, rewards, next_states, dones, discounts
 
 class PERBuffer(ReplayBuffer):
     def __init__(self, buffer_size, batch_size, alpha=0.6, beta=0.4):
@@ -45,8 +48,10 @@ class PERBuffer(ReplayBuffer):
         self.epsilon = 1e-6
         self.priorities = deque(maxlen=buffer_size)
 
-    def add(self, state, action, reward, next_state, done, td_error):
-        super().add(state, action, reward, next_state, done)
+    def add(
+        self, state, action, reward, next_state, done, td_error, discount=1.0
+    ):
+        super().add(state, action, reward, next_state, done, discount)
         priority = (math.fabs(td_error) + self.epsilon)
         self.priorities.append(priority)
 
@@ -75,8 +80,11 @@ class PERBuffer(ReplayBuffer):
         dones = torch.tensor(
             [x[4] for x in data], dtype=torch.float32
         )
+        discounts = torch.tensor(
+            [x[5] for x in data], dtype=torch.float32
+        )
         weights = (len(self.buffer) * probabilities[indices]) ** (-self.beta)
         weights /= weights.max()
         weights = torch.tensor(weights, dtype=torch.float32)
 
-        return states, actions, rewards, next_states, dones, weights
+        return states, actions, rewards, next_states, dones, discounts, weights

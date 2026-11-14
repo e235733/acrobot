@@ -1,3 +1,4 @@
+from collections import deque
 import random
 import torch
 
@@ -5,7 +6,9 @@ from replay_buffer import ReplayBuffer, PERBuffer
 from qnet import QNet
 
 class DQNAgent:
-    def __init__(self, state_size=6, action_size=3, dueling=False, use_per=True):
+    def __init__(
+        self, state_size=6, action_size=3, dueling=False, use_per=True, n_steps=1
+    ):
         self.gamma = 0.99
         self.lr = 0.001
         self.batch_size = 128
@@ -18,6 +21,11 @@ class DQNAgent:
 
         self.action_size = action_size
         self.loss_history = []
+
+        if n_steps < 1:
+            raise ValueError("n_steps must be at least 1")
+        self.n_steps = n_steps
+        self.n_step_buffer = deque()
 
         self.use_per = use_per
         buffer_cls = PERBuffer if use_per else ReplayBuffer
@@ -51,39 +59,76 @@ class DQNAgent:
             q_values = self.qnet(x)
             return int(q_values.argmax(dim=1).item())
 
-    def _compute_td_error(self, state, action, reward, next_state, done):
+    def _next_q_values(self, next_states):
+        return self.qnet_target(next_states).max(dim=1).values
+
+    def _compute_td_error(
+        self, state, action, reward, next_state, done, discount
+    ):
         with torch.no_grad():
             s = torch.as_tensor(state, dtype=torch.float32).unsqueeze(0)
             ns = torch.as_tensor(next_state, dtype=torch.float32).unsqueeze(0)
 
             q = self.qnet(s)[0, action]
-            next_q = self.qnet_target(ns).max(dim=1).values[0]
-            target = reward + (1 - done) * self.gamma * next_q
+            next_q = self._next_q_values(ns)[0]
+            target = reward + (1 - done) * discount * next_q
 
         return float((target - q).item())
 
-    def update(self, state, action, reward, next_state, done):
+    def _store_n_step_transition(self):
+        state, action = self.n_step_buffer[0][:2]
+        total_reward = 0.0
+        next_state = None
+        done = False
+        horizon = 0
+
+        transitions = list(self.n_step_buffer)[:self.n_steps]
+        for _, _, reward, next_state, done in transitions:
+            total_reward += (self.gamma ** horizon) * reward
+            horizon += 1
+            if done:
+                break
+
+        discount = self.gamma ** horizon
         if self.use_per:
             td_error = self._compute_td_error(
-                state, action, reward, next_state, done
+                state, action, total_reward, next_state, done, discount
             )
             self.replay_buffer.add(
-                state, action, reward, next_state, done, td_error
+                state, action, total_reward, next_state, done, td_error,
+                discount=discount
             )
         else:
             self.replay_buffer.add(
-                state, action, reward, next_state, done
+                state, action, total_reward, next_state, done,
+                discount=discount
             )
+        self.n_step_buffer.popleft()
+
+    def update(
+        self, state, action, reward, next_state, done, episode_end=None
+    ):
+        if episode_end is None:
+            episode_end = done
+
+        self.n_step_buffer.append(
+            (state, action, reward, next_state, done)
+        )
+        if len(self.n_step_buffer) >= self.n_steps:
+            self._store_n_step_transition()
+        if episode_end:
+            while self.n_step_buffer:
+                self._store_n_step_transition()
 
         if len(self.replay_buffer) < self.batch_size:
             return
 
         if self.use_per:
-            states, actions, rewards, next_states, dones, weights = (
+            states, actions, rewards, next_states, dones, discounts, weights = (
                 self.replay_buffer.get_batch()
             )
         else:
-            states, actions, rewards, next_states, dones = (
+            states, actions, rewards, next_states, dones, discounts = (
                 self.replay_buffer.get_batch()
             )
             weights = 1.0
@@ -94,9 +139,8 @@ class DQNAgent:
         ).squeeze(1)
 
         with torch.no_grad():
-            next_q_values = self.qnet_target(next_states)
-            next_q = next_q_values.max(dim=1).values
-            target = rewards + (1 - dones) * self.gamma * next_q
+            next_q = self._next_q_values(next_states)
+            target = rewards + (1 - dones) * discounts * next_q
 
         loss = (weights * (q - target) ** 2).mean()
 
@@ -112,67 +156,9 @@ class DQNAgent:
         )
 
 class DoubleDQNAgent(DQNAgent):
-    def __init__(self, state_size=6, action_size=3, dueling=False, use_per=True):
-        super().__init__(state_size, action_size, dueling, use_per)
-
-    def _compute_td_error(self, state, action, reward, next_state, done):
+    def _next_q_values(self, next_states):
         with torch.no_grad():
-            s = torch.as_tensor(state, dtype=torch.float32).unsqueeze(0)
-            ns = torch.as_tensor(next_state, dtype=torch.float32).unsqueeze(0)
-
-            q = self.qnet(s)[0, action]
-            next_action = self.qnet(ns).argmax(dim=1)
-            next_q = self.qnet_target(ns).gather(
-                1, next_action.unsqueeze(1)
-            ).squeeze(1)[0]
-            target = reward + (1 - done) * self.gamma * next_q
-
-        return float((target - q).item())
-
-    def update(self, state, action, reward, next_state, done):
-        if self.use_per:
-            td_error = self._compute_td_error(
-                state, action, reward, next_state, done
-            )
-            self.replay_buffer.add(
-                state, action, reward, next_state, done, td_error
-            )
-        else:
-            self.replay_buffer.add(
-                state, action, reward, next_state, done
-            )
-
-        if len(self.replay_buffer) < self.batch_size:
-            return
-
-        if self.use_per:
-            states, actions, rewards, next_states, dones, weights = (
-                self.replay_buffer.get_batch()
-            )
-        else:
-            states, actions, rewards, next_states, dones = (
-                self.replay_buffer.get_batch()
-            )
-            weights = 1.0
-
-        q_values = self.qnet(states)
-        q = q_values.gather(
-            1, actions.unsqueeze(1)
-        ).squeeze(1)
-
-        with torch.no_grad():
-            next_q_values = self.qnet(next_states)
-            next_actions = next_q_values.argmax(dim=1)
-            next_q_target_values = self.qnet_target(next_states)
-            next_q = next_q_target_values.gather(
+            next_actions = self.qnet(next_states).argmax(dim=1)
+            return self.qnet_target(next_states).gather(
                 1, next_actions.unsqueeze(1)
             ).squeeze(1)
-            target = rewards + (1 - dones) * self.gamma * next_q
-
-        loss = (weights * (q - target) ** 2).mean()
-
-        self.loss_history.append(loss.item())
-
-        self.optimizer.zero_grad()
-        loss.backward()
-        self.optimizer.step()

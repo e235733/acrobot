@@ -199,7 +199,8 @@ def main():
         state_size=env.observation_space.shape[0],
         action_size=env.action_space.n,
         dueling=True,
-        use_per=False
+        use_per=False,
+        n_steps=3
     )
 
     episodes = 500
@@ -219,7 +220,14 @@ def main():
 
                 next_state, reward, terminated, truncated, _ = env.step(action)
 
-                agent.update(state,action,reward,next_state,terminated)
+                agent.update(
+                    state,
+                    action,
+                    reward,
+                    next_state,
+                    terminated,
+                    episode_end=terminated or truncated
+                )
 
                 state = next_state
                 total_reward += reward
